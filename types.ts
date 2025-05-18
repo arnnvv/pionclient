@@ -17,5 +17,25 @@ export interface DirectSignalPayload {
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
   toPeerID: string;
-  fromPeerID?: string;
 }
+
+export interface SignalInitiateP2PClientPayload {
+  clientId: string;
+}
+
+export interface P2PMessagePayloadFromServer {
+  sdp?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+  fromPeerID: string;
+  toPeerID?: string;
+  clientId?: string;
+}
+
+export type ReceivedSignalingMessage =
+  | { type: "answer"; payload: SDPPayload }
+  | { type: "candidate"; payload: CandidatePayload }
+  | { type: "signal-initiate-p2p"; payload: P2PMessagePayloadFromServer }
+  | { type: "direct-offer"; payload: P2PMessagePayloadFromServer }
+  | { type: "direct-answer"; payload: P2PMessagePayloadFromServer }
+  | { type: "direct-candidate"; payload: P2PMessagePayloadFromServer }
+  | { type: string; payload: any };
