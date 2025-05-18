@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { StreamApp } from "./StreamApp";
+import { Route, Switch } from "wouter";
+import { WatchApp } from "./WatchApp";
 
 const rootElement = document.getElementById("root");
 
@@ -10,6 +12,9 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <Switch>
+      <Route path="/" component={StreamApp} />
+      <Route path="/watch" component={WatchApp} />
+    </Switch>
   </StrictMode>,
 );
