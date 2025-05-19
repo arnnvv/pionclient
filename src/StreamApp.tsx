@@ -35,20 +35,30 @@ export function StreamApp(): JSX.Element {
 
   const sendSignalingMessage = (message: SignalingMessage) => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      console.log("[StreamApp] Sending signaling message:", message);
       ws.current.send(JSON.stringify(message));
+    } else {
+      console.warn(
+        "[StreamApp] WebSocket not open, cannot send message:",
+        message,
+      );
     }
   };
 
-  const createServerPeerConnection = (): RTCPeerConnection | null => {
-    if (serverPc.current) {
+  const createServerPeerConnection = (): RTCPeerConnection => {
+    console.log("[StreamApp] createServerPeerConnection called");
+    if (serverPc.current && serverPc.current.signalingState !== "closed") {
+      console.log("[StreamApp] Returning existing serverPc");
       return serverPc.current;
     }
+    console.log("[StreamApp] Creating NEW serverPc (HLS PC)");
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log("[StreamApp] serverPc ICE candidate:", event.candidate);
         sendSignalingMessage({
           type: "candidate",
           payload: { candidate: event.candidate.toJSON() } as CandidatePayload,
@@ -57,11 +67,18 @@ export function StreamApp(): JSX.Element {
     };
 
     pc.oniceconnectionstatechange = () => {
+      console.log(
+        "[StreamApp] serverPc ICE connection state change:",
+        pc.iceConnectionState,
+      );
       if (
         pc.iceConnectionState === "failed" ||
         pc.iceConnectionState === "closed" ||
         pc.iceConnectionState === "disconnected"
       ) {
+        console.log(
+          "[StreamApp] serverPc ICE connection failed/closed/disconnected. Cleaning up.",
+        );
         serverPc.current?.close();
         serverPc.current = null;
         serverPcSenders.current.clear();
@@ -73,34 +90,50 @@ export function StreamApp(): JSX.Element {
   };
 
   const createAndSendOfferToServerPc = async () => {
-    if (!serverPc.current) {
+    if (!serverPc.current || serverPc.current.signalingState === "closed") {
+      console.error(
+        "[StreamApp] createAndSendOfferToServerPc: serverPc is null or closed.",
+      );
       return;
     }
+    console.log(
+      "[StreamApp] createAndSendOfferToServerPc: Attempting to create offer for serverPc. Signaling state:",
+      serverPc.current.signalingState,
+    );
+
     if (
       serverPc.current.getSenders().filter((s) => s.track).length === 0 &&
       localStream
     ) {
-      setTimeout(createAndSendOfferToServerPc, 200);
-      return;
-    }
-    if (
-      serverPc.current.getSenders().filter((s) => s.track).length === 0 &&
-      !localStream
-    ) {
-      return;
+      console.warn(
+        "[StreamApp] createAndSendOfferToServerPc: No tracks on serverPc yet, but localStream exists. This might be too early or tracks not added.",
+      );
     }
 
     try {
       const offer = await serverPc.current.createOffer();
+      console.log(
+        "[StreamApp] createAndSendOfferToServerPc: Offer created for serverPc:",
+        offer,
+      );
       await serverPc.current.setLocalDescription(offer);
+      console.log(
+        "[StreamApp] createAndSendOfferToServerPc: Local description set on serverPc",
+      );
       sendSignalingMessage({
         type: "offer",
         payload: {
           sdp: serverPc.current.localDescription?.toJSON(),
         } as SDPPayload,
       });
+      console.log(
+        "[StreamApp] createAndSendOfferToServerPc: 'offer' message sent to server for serverPc",
+      );
     } catch (error) {
-      console.error(error);
+      console.error(
+        "[StreamApp] createAndSendOfferToServerPc: Error creating/sending offer for serverPc:",
+        error,
+      );
     }
   };
 
@@ -111,7 +144,7 @@ export function StreamApp(): JSX.Element {
         throw new Error("P2PConnection does not exist but was in map");
       return p2pconnection;
     }
-
+    console.log(`[StreamApp] Creating NEW P2P connection for peer ${peerId}`);
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
@@ -130,6 +163,10 @@ export function StreamApp(): JSX.Element {
     };
 
     pc.ontrack = (event) => {
+      console.log(
+        `[StreamApp] P2P connection with ${peerId} received track:`,
+        event.track,
+      );
       let stream = remoteStreams.current.get(peerId);
       if (!stream) {
         stream = new MediaStream();
@@ -140,6 +177,9 @@ export function StreamApp(): JSX.Element {
     };
 
     pc.oniceconnectionstatechange = () => {
+      console.log(
+        `[StreamApp] P2P connection with ${peerId} ICE state: ${pc.iceConnectionState}`,
+      );
       if (
         pc.iceConnectionState === "disconnected" ||
         pc.iceConnectionState === "closed" ||
@@ -158,47 +198,145 @@ export function StreamApp(): JSX.Element {
     };
 
     if (localStream) {
+      console.log(
+        `[StreamApp] CLIENT ${clientId.substring(0, 4)}: In createP2PConnection for ${peerId.substring(0, 4)}. Adding localStream tracks.`,
+      );
       for (const track of localStream.getTracks()) {
         try {
-          pc.addTrack(track, localStream);
+          if (!pc.getSenders().find((s) => s.track === track)) {
+            pc.addTrack(track, localStream);
+            console.log(
+              `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Added track ${track.kind} to P2P for ${peerId.substring(0, 4)}`,
+            );
+          }
         } catch (e) {
-          console.error(e);
+          console.error(
+            `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Error adding track to P2P PC for ${peerId.substring(0, 4)}:`,
+            e,
+          );
         }
       }
+    } else {
+      console.log(
+        `[StreamApp] CLIENT ${clientId.substring(0, 4)}: In createP2PConnection for ${peerId.substring(0, 4)}. LocalStream is NULL, no tracks added initially.`,
+      );
     }
+
+    pc.onnegotiationneeded = async () => {
+      if (
+        pc.signalingState === "stable" &&
+        peerConnections.current.has(peerId) /* ensure it's still a managed PC */
+      ) {
+        console.log(
+          `[StreamApp] CLIENT ${clientId.substring(0, 4)}: onnegotiationneeded for P2P with ${peerId.substring(0, 4)}. Creating offer.`,
+        );
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          sendSignalingMessage({
+            type: "direct-offer",
+            payload: {
+              sdp: pc.localDescription?.toJSON(),
+              toPeerID: peerId,
+            } as DirectSignalPayload,
+          });
+        } catch (e) {
+          console.error(
+            `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Error in P2P onnegotiationneeded for ${peerId.substring(0, 4)}:`,
+            e,
+          );
+        }
+      } else {
+        console.warn(
+          `[StreamApp] CLIENT ${clientId.substring(0, 4)}: onnegotiationneeded for P2P with ${peerId.substring(0, 4)} but state not stable or PC removed. State: ${pc.signalingState}`,
+        );
+      }
+    };
+
     return pc;
   };
 
   const handleInitiateP2P = (fromPeerID: string) => {
+    console.log(
+      `[StreamApp] CLIENT ${clientId.substring(0, 4)}: handleInitiateP2P from NEW PEER ${fromPeerID.substring(0, 4)}`,
+    );
     if (fromPeerID === clientId) return;
     if (peerConnections.current.has(fromPeerID)) {
+      console.log(
+        `[StreamApp] CLIENT ${clientId.substring(0, 4)}: P2P connection with ${fromPeerID.substring(0, 4)} already exists or pending.`,
+      );
       return;
     }
+
     const p2pPc = createP2PConnection(fromPeerID);
 
-    p2pPc
-      .createOffer()
-      .then((offer) => {
-        return p2pPc.setLocalDescription(offer);
-      })
-      .then(() => {
-        if (p2pPc.localDescription) {
-          sendSignalingMessage({
-            type: "direct-offer",
-            payload: {
-              sdp: p2pPc.localDescription.toJSON(),
-              toPeerID: fromPeerID,
-            } as DirectSignalPayload,
-          });
+    if (p2pPc.getSenders().some((sender) => sender.track)) {
+      console.log(
+        `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Tracks present on new P2P PC for ${fromPeerID.substring(0, 4)}. Creating offer.`,
+      );
+      p2pPc
+        .createOffer()
+        .then((offer) => {
+          console.log(
+            `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Offer created for ${fromPeerID.substring(0, 4)}`,
+          );
+          return p2pPc.setLocalDescription(offer);
+        })
+        .then(() => {
+          if (p2pPc.localDescription) {
+            console.log(
+              `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Sending direct-offer to ${fromPeerID.substring(0, 4)}`,
+            );
+            sendSignalingMessage({
+              type: "direct-offer",
+              payload: {
+                sdp: p2pPc.localDescription.toJSON(),
+                toPeerID: fromPeerID,
+              } as DirectSignalPayload,
+            });
+          }
+        })
+        .catch((e) => {
+          console.error(
+            `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Error in handleInitiateP2P offer for ${fromPeerID.substring(0, 4)}:`,
+            e,
+          );
+        });
+    } else {
+      console.log(
+        `[StreamApp] CLIENT ${clientId.substring(0, 4)}: No tracks on new P2P PC for ${fromPeerID.substring(0, 4)} yet (localStream might be null). Offer will be triggered by onnegotiationneeded when tracks are added later.`,
+      );
+      p2pPc.onnegotiationneeded = async () => {
+        if (p2pPc.signalingState === "stable") {
+          console.log(
+            `[StreamApp] CLIENT ${clientId.substring(0, 4)}: onnegotiationneeded for P2P with ${fromPeerID.substring(0, 4)}. Creating offer.`,
+          );
+          try {
+            const offer = await p2pPc.createOffer();
+            await p2pPc.setLocalDescription(offer);
+            sendSignalingMessage({
+              type: "direct-offer",
+              payload: {
+                sdp: p2pPc.localDescription?.toJSON(),
+                toPeerID: fromPeerID,
+              } as DirectSignalPayload,
+            });
+          } catch (e) {
+            console.error(
+              `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Error in P2P onnegotiationneeded for ${fromPeerID.substring(0, 4)}:`,
+              e,
+            );
+          }
         }
-      })
-      .catch(() => {});
+      };
+    }
   };
 
   const handleDirectOffer = async (
     fromPeerID: string,
     sdp: RTCSessionDescriptionInit,
   ) => {
+    console.log(`[StreamApp] handleDirectOffer from ${fromPeerID}`);
     if (fromPeerID === clientId) return;
     const p2pPc = createP2PConnection(fromPeerID);
     try {
@@ -210,7 +348,10 @@ export function StreamApp(): JSX.Element {
           try {
             await p2pPc.addIceCandidate(new RTCIceCandidate(candidate));
           } catch (e) {
-            console.error(e);
+            console.error(
+              `[StreamApp] Error adding pending P2P candidate from ${fromPeerID}:`,
+              e,
+            );
           }
         }
         pendingP2PCandidates.current.delete(fromPeerID);
@@ -228,7 +369,10 @@ export function StreamApp(): JSX.Element {
         });
       }
     } catch (e) {
-      console.error(e);
+      console.error(
+        `[StreamApp] Error in handleDirectOffer from ${fromPeerID}:`,
+        e,
+      );
     }
   };
 
@@ -236,6 +380,7 @@ export function StreamApp(): JSX.Element {
     fromPeerID: string,
     sdp: RTCSessionDescriptionInit,
   ) => {
+    console.log(`[StreamApp] handleDirectAnswer from ${fromPeerID}`);
     if (fromPeerID === clientId) return;
     const p2pPc = peerConnections.current.get(fromPeerID);
     if (p2pPc) {
@@ -247,13 +392,19 @@ export function StreamApp(): JSX.Element {
             try {
               await p2pPc.addIceCandidate(new RTCIceCandidate(candidate));
             } catch (e) {
-              console.error(e);
+              console.error(
+                `[StreamApp] Error adding pending P2P candidate (on answer) from ${fromPeerID}:`,
+                e,
+              );
             }
           }
           pendingP2PCandidates.current.delete(fromPeerID);
         }
       } catch (e) {
-        console.error(e);
+        console.error(
+          `[StreamApp] Error in handleDirectAnswer from ${fromPeerID}:`,
+          e,
+        );
       }
     }
   };
@@ -262,6 +413,7 @@ export function StreamApp(): JSX.Element {
     fromPeerID: string,
     candidateInit: RTCIceCandidateInit,
   ) => {
+    console.log(`[StreamApp] handleDirectCandidate from ${fromPeerID}`);
     if (fromPeerID === clientId) return;
     const p2pPc = peerConnections.current.get(fromPeerID);
     if (p2pPc) {
@@ -269,7 +421,10 @@ export function StreamApp(): JSX.Element {
         try {
           await p2pPc.addIceCandidate(new RTCIceCandidate(candidateInit));
         } catch (e) {
-          console.error(e);
+          console.error(
+            `[StreamApp] Error adding direct P2P candidate from ${fromPeerID}:`,
+            e,
+          );
         }
       } else {
         const peerCandidates =
@@ -282,10 +437,12 @@ export function StreamApp(): JSX.Element {
 
   useEffect(() => {
     const wsUrlWithClientId = `${WS_URL_BASE}?clientId=${clientId}`;
+    console.log(`[StreamApp] Connecting WebSocket to ${wsUrlWithClientId}`);
     const socket = new WebSocket(wsUrlWithClientId);
     ws.current = socket;
 
     socket.onopen = () => {
+      console.log("[StreamApp] WebSocket connected.");
       setIsWsConnected(true);
       sendSignalingMessage({
         type: "signal-initiate-p2p",
@@ -296,6 +453,7 @@ export function StreamApp(): JSX.Element {
     socket.onmessage = async (event) => {
       try {
         const message = JSON.parse(event.data as string) as SignalingMessage;
+        console.log("[StreamApp] WebSocket message received:", message);
 
         switch (message.type) {
           case "answer":
@@ -304,17 +462,26 @@ export function StreamApp(): JSX.Element {
               message.payload.sdp &&
               serverPc.current.signalingState !== "closed"
             ) {
+              console.log(
+                "[StreamApp] Received 'answer' for serverPc (HLS). Setting remote description.",
+              );
               await serverPc.current.setRemoteDescription(
                 new RTCSessionDescription(message.payload.sdp),
               );
               if (pendingServerCandidates.current.length > 0) {
+                console.log(
+                  "[StreamApp] Processing pending serverPc candidates after receiving answer.",
+                );
                 for (const candidate of pendingServerCandidates.current) {
                   try {
                     await serverPc.current.addIceCandidate(
                       new RTCIceCandidate(candidate),
                     );
                   } catch (e) {
-                    console.error(e);
+                    console.error(
+                      "[StreamApp] Error adding pending serverPc candidate:",
+                      e,
+                    );
                   }
                 }
                 pendingServerCandidates.current = [];
@@ -328,10 +495,16 @@ export function StreamApp(): JSX.Element {
               serverPc.current.signalingState !== "closed"
             ) {
               if (serverPc.current.remoteDescription) {
+                console.log(
+                  "[StreamApp] Received 'candidate' for serverPc (HLS), remote desc set. Adding ICE candidate.",
+                );
                 await serverPc.current.addIceCandidate(
                   new RTCIceCandidate(message.payload.candidate),
                 );
               } else {
+                console.log(
+                  "[StreamApp] Received 'candidate' for serverPc (HLS), remote desc NOT set. Queuing candidate.",
+                );
                 pendingServerCandidates.current.push(
                   message.payload.candidate as RTCIceCandidateInit,
                 );
@@ -373,23 +546,37 @@ export function StreamApp(): JSX.Element {
             }
             break;
           default:
+            console.warn(
+              "[StreamApp] Unknown WebSocket message type:",
+              message.type,
+            );
             break;
         }
       } catch (error) {
-        console.error(error);
+        console.error(
+          "[StreamApp] Error processing WebSocket message:",
+          error,
+          "Raw data:",
+          event.data,
+        );
       }
     };
 
-    socket.onerror = () => {
+    socket.onerror = (err) => {
+      console.error("[StreamApp] WebSocket error:", err);
       setIsWsConnected(false);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      console.log("[StreamApp] WebSocket closed:", event.code, event.reason);
       ws.current = null;
       setIsWsConnected(false);
     };
 
     return () => {
+      console.log(
+        "[StreamApp] Cleaning up main useEffect. Closing connections.",
+      );
       serverPc.current?.close();
       serverPc.current = null;
       serverPcSenders.current.clear();
@@ -413,104 +600,163 @@ export function StreamApp(): JSX.Element {
       ws.current = null;
       setIsWsConnected(false);
       if (localStream) {
+        console.log("[StreamApp] Stopping local stream tracks in cleanup.");
         for (const track of localStream.getTracks()) {
           track.stop();
         }
         setLocalStream(null);
       }
     };
-  }, [clientId, localStream]);
+  }, [clientId]);
 
   const startStreaming = async () => {
+    console.log("[StreamApp] startStreaming called");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
+      console.log("[StreamApp] Got user media stream:", stream);
       setLocalStream(stream);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
     } catch (error) {
+      console.error("[StreamApp] Could not access camera/microphone:", error);
       alert("Could not access camera/microphone. Please check permissions.");
     }
   };
 
   useEffect(() => {
     if (localStream && isWsConnected) {
-      initiateConnectionsAfterMedia(localStream);
+      console.log(
+        "[StreamApp] localStream and isWsConnected are true. Initiating HLS connection.",
+      );
+      initiateHLSConnection(localStream);
+      initiateP2PConnectionsWithExistingPeers(localStream);
     }
   }, [localStream, isWsConnected]);
 
-  const initiateConnectionsAfterMedia = async (
-    currentLocalStream: MediaStream,
-  ) => {
+  const initiateHLSConnection = async (currentLocalStream: MediaStream) => {
+    console.log("[StreamApp] initiateHLSConnection called");
     let sPC = serverPc.current;
-    if (!sPC) {
+    if (!sPC || sPC.signalingState === "closed") {
       sPC = createServerPeerConnection();
     }
 
-    if (sPC) {
-      let tracksChangedOrAddedToHLS = false;
-      for (const track of currentLocalStream.getTracks()) {
-        const existingSender = serverPcSenders.current.get(track.kind);
-        if (existingSender) {
-          if (existingSender.track?.id !== track.id) {
-            await existingSender.replaceTrack(track).catch(() => {});
-            tracksChangedOrAddedToHLS = true;
-          }
-        } else {
-          try {
-            const newSender = sPC.addTrack(track, currentLocalStream);
-            serverPcSenders.current.set(track.kind, newSender);
-            tracksChangedOrAddedToHLS = true;
-          } catch (e) {
-            console.error(e);
-          }
+    let tracksChangedOrAddedToHLS = false;
+    for (const track of currentLocalStream.getTracks()) {
+      const existingSender = serverPcSenders.current.get(track.kind);
+      if (existingSender) {
+        if (existingSender.track?.id !== track.id) {
+          console.log(
+            `[StreamApp] Replacing track ${track.kind} on serverPc (HLS)`,
+          );
+          await existingSender.replaceTrack(track).catch((e) => {
+            console.error("Error replacing track on serverPc:", e);
+          });
+          tracksChangedOrAddedToHLS = true;
         }
-      }
-
-      if (sPC.signalingState === "stable" && tracksChangedOrAddedToHLS) {
-        await createAndSendOfferToServerPc();
+      } else {
+        try {
+          console.log(
+            `[StreamApp] Adding track ${track.kind} to serverPc (HLS)`,
+          );
+          const newSender = sPC.addTrack(track, currentLocalStream);
+          serverPcSenders.current.set(track.kind, newSender);
+          tracksChangedOrAddedToHLS = true;
+        } catch (e) {
+          console.error("[StreamApp] Error adding track to serverPc:", e);
+        }
       }
     }
 
+    if (sPC.signalingState === "stable" && tracksChangedOrAddedToHLS) {
+      console.log(
+        "[StreamApp] ServerPc (HLS) is stable and tracks changed/added. Creating offer.",
+      );
+      await createAndSendOfferToServerPc();
+    } else if (sPC.signalingState !== "stable") {
+      console.log(
+        "[StreamApp] ServerPc (HLS) not in stable state, will rely on negotiationneeded or manual restart for offer if tracks were added to non-stable PC.",
+      );
+      sPC.onnegotiationneeded = async () => {
+        console.log("[StreamApp] serverPc (HLS) 'onnegotiationneeded' fired.");
+        if (sPC.signalingState === "stable") {
+          await createAndSendOfferToServerPc();
+        } else {
+          console.warn(
+            "[StreamApp] onnegotiationneeded on serverPc but not stable. State:",
+            sPC.signalingState,
+          );
+        }
+      };
+    }
+  };
+
+  const initiateP2PConnectionsWithExistingPeers = (
+    currentLocalStream: MediaStream,
+  ) => {
+    console.log(
+      `[StreamApp] CLIENT ${clientId.substring(0, 4)}: initiateP2PConnectionsWithExistingPeers called with new localStream.`,
+    );
     peerConnections.current.forEach(async (p2pPc, peerId) => {
+      console.log(
+        `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Updating/adding tracks for existing P2P connection with ${peerId.substring(0, 4)}`,
+      );
       let p2pTracksChanged = false;
       for (const track of currentLocalStream.getTracks()) {
-        const sender = p2pPc
+        const existingSender = p2pPc
           .getSenders()
           .find((s) => s.track?.kind === track.kind);
-        if (sender) {
-          if (sender.track?.id !== track.id) {
-            await sender.replaceTrack(track).catch(() => {});
+        if (existingSender) {
+          if (
+            existingSender.track?.id !== track.id &&
+            existingSender.track !== null
+          ) {
+            console.log(
+              `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Replacing track ${track.kind} on P2P with ${peerId.substring(0, 4)}`,
+            );
+            await existingSender.replaceTrack(track).catch((e) => {
+              console.error("Error replacing P2P track:", e);
+            });
             p2pTracksChanged = true;
           }
         } else {
           try {
+            console.log(
+              `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Adding track ${track.kind} to existing P2P with ${peerId.substring(0, 4)}`,
+            );
             p2pPc.addTrack(track, currentLocalStream);
             p2pTracksChanged = true;
           } catch (e) {
-            console.error(e);
+            console.error(
+              `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Error adding track to existing P2P PC with ${peerId.substring(0, 4)}:`,
+              e,
+            );
           }
         }
       }
       if (p2pTracksChanged && p2pPc.signalingState === "stable") {
-        p2pPc
-          .createOffer()
-          .then((offer) => p2pPc.setLocalDescription(offer))
-          .then(() => {
-            if (p2pPc.localDescription) {
-              sendSignalingMessage({
-                type: "direct-offer",
-                payload: {
-                  sdp: p2pPc.localDescription.toJSON(),
-                  toPeerID: peerId,
-                } as DirectSignalPayload,
-              });
-            }
-          })
-          .catch(() => {});
+        console.log(
+          `[StreamApp] CLIENT ${clientId.substring(0, 4)}: P2P with ${peerId.substring(0, 4)} had tracks changed & is stable. Explicitly creating offer (fallback).`,
+        );
+        try {
+          const offer = await p2pPc.createOffer();
+          await p2pPc.setLocalDescription(offer);
+          sendSignalingMessage({
+            type: "direct-offer",
+            payload: {
+              sdp: p2pPc.localDescription?.toJSON(),
+              toPeerID: peerId,
+            } as DirectSignalPayload,
+          });
+        } catch (e) {
+          console.error(
+            `[StreamApp] CLIENT ${clientId.substring(0, 4)}: Error in explicit P2P re-offer to ${peerId.substring(0, 4)}:`,
+            e,
+          );
+        }
       }
     });
   };

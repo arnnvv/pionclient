@@ -86,23 +86,14 @@ export function WatchApp(): JSX.Element {
   }, []);
 
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">Watch HLS Stream</h1>
-      <div className="bg-black rounded overflow-hidden shadow-lg">
-        <video
-          ref={videoRef}
-          controls
-          autoPlay
-          playsInline
-          className="w-full aspect-video"
-          onPlay={() => console.log("Video playback started.")}
-          onPause={() => console.log("Video playback paused.")}
-          onError={(e) => console.error("HTML Video Element Error:", e)}
-        />
-      </div>
-      <p className="mt-2 text-sm text-gray-600">
-        Attempting to play HLS stream from: {HLS_STREAM_URL}
-      </p>
-    </div>
+    <video
+      ref={videoRef}
+      controls
+      autoPlay
+      playsInline
+      onPlay={() => console.log("Video playback started.")}
+      onPause={() => console.log("Video playback paused.")}
+      onError={(e) => console.error("HTML Video Element Error:", e)}
+    />
   );
 }
