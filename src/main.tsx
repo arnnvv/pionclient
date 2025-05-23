@@ -1,11 +1,8 @@
-import { StrictMode, Suspense, lazy } from "react";
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { StreamApp } from "./StreamApp";
+import { WatchApp } from "./WatchApp";
 import { Route, Switch } from "wouter";
-
-const WatchAppLazy = lazy(() =>
-  import("./WatchApp").then((module) => ({ default: module.WatchApp })),
-);
 
 const rootElement = document.getElementById("root");
 
@@ -17,11 +14,7 @@ createRoot(rootElement).render(
   <StrictMode>
     <Switch>
       <Route path="/" component={StreamApp} />
-      <Route path="/watch">
-        <Suspense fallback={<>Loading...</>}>
-          <WatchAppLazy />
-        </Suspense>
-      </Route>
+      <Route path="/watch" component={WatchApp} />
     </Switch>
   </StrictMode>,
 );

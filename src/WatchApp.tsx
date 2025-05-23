@@ -1,11 +1,10 @@
 import { useEffect, useRef, type JSX } from "react";
 import Hls from "hls.js";
 
-const HLS_STREAM_URL = "http://localhost:8080/hls/stream.m3u8";
-
 export function WatchApp(): JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const HLS_STREAM_URL = `http://localhost:8080/hls/stream.m3u8?t=${Date.now()}`;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -15,7 +14,12 @@ export function WatchApp(): JSX.Element {
 
     if (Hls.isSupported()) {
       console.log("HLS.js is supported. Initializing HLS player.");
-      const hls = new Hls();
+      const hls = new Hls({
+        debug: true,
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 90,
+      });
       hlsRef.current = hls;
 
       hls.loadSource(HLS_STREAM_URL);
@@ -81,9 +85,14 @@ export function WatchApp(): JSX.Element {
       if (videoElement) {
         videoElement.pause();
         videoElement.src = "";
+        const newVideoElement = videoElement.cloneNode(
+          true,
+        ) as HTMLVideoElement;
+        videoElement.parentNode?.replaceChild(newVideoElement, videoElement);
+        videoRef.current = newVideoElement;
       }
     };
-  }, []);
+  }, [HLS_STREAM_URL]);
 
   return (
     <video
@@ -94,6 +103,7 @@ export function WatchApp(): JSX.Element {
       onPlay={() => console.log("Video playback started.")}
       onPause={() => console.log("Video playback paused.")}
       onError={(e) => console.error("HTML Video Element Error:", e)}
+      style={{ width: "100%", maxHeight: "80vh", backgroundColor: "black" }}
     />
   );
 }
